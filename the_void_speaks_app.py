@@ -131,15 +131,23 @@ for i, r in enumerate(filtered):
              f"<span class='small'>{r['artist']} • {r['album']} • {fmt_time(r['duration'])}</span>",
             unsafe_allow_html=True
         )
-<span class='small'>{r['artist']} • {r['album']} • {fmt_time(r['duration'])}</span>", unsafe_allow_html=True)
-        c1, c2 = st.columns([1,1])
-        if c1.button("▶ Play", key=f"play_{i}"):
-            st.session_state["current_idx"] = i
-            st.session_state["current_list"] = [rr["path"] for rr in filtered]
-            st.session_state["now"] = r
-        if c2.button("➕ Queue", key=f"queue_{i}"):
-            st.session_state["queue"].append(r["path"])
-        st.markdown("</div>", unsafe_allow_html=True)
+st.markdown(
+    f"**{r['title']}**  "
+    f"<span class='small'>{r['artist']} - {r['album']} - {fmt_time(r['duration'])}</span>",
+    unsafe_allow_html=True
+)
+
+c1, c2 = st.columns([1,1])
+
+if c1.button("▶ Play", key=f"play_{i}"):
+    st.session_state["current_idx"] = i
+    st.session_state["current_list"] = [rr["path"] for rr in filtered]
+    st.session_state["now"] = r
+
+if c2.button("➕ Queue", key=f"queue_{i}"):
+    st.session_state["queue"].append(r["path"])
+
+st.markdown("</div>", unsafe_allow_html=True)
 
 st.session_state.setdefault("current_idx", 0)
 st.session_state.setdefault("current_list", [rr["path"] for rr in filtered] if filtered else [])
