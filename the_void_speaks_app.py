@@ -131,23 +131,34 @@ for i, r in enumerate(filtered):
              f"<span class='small'>{r['artist']} • {r['album']} • {fmt_time(r['duration'])}</span>",
             unsafe_allow_html=True
         )
-st.markdown(
-    f"**{r['title']}**  "
-    f"<span class='small'>{r['artist']} - {r['album']} - {fmt_time(r['duration'])}</span>",
-    unsafe_allow_html=True
-)
+cols = st.columns(3)
+for i, r in enumerate(filtered):
+    title  = r.get("title", "")
+    artist = r.get("artist", "Unknown")
+    album  = r.get("album", "Unknown")
+    dur    = fmt_time(r.get("duration", 0))
 
-c1, c2 = st.columns([1,1])
+    with cols[i % 3]:
+        st.markdown("<div class='glass'>", unsafe_allow_html=True)
 
-if c1.button("▶ Play", key=f"play_{i}"):
-    st.session_state["current_idx"] = i
-    st.session_state["current_list"] = [rr["path"] for rr in filtered]
-    st.session_state["now"] = r
+        # No f-strings with dict indexing → use .format() to avoid parser issues
+        card_html = (
+            "**{title}**  \n"
+            "<span class='small'>{artist} &bull; {album} &bull; {dur}</span>"
+        ).format(title=title, artist=artist, album=album, dur=dur)
+        st.markdown(card_html, unsafe_allow_html=True)
 
-if c2.button("➕ Queue", key=f"queue_{i}"):
-    st.session_state["queue"].append(r["path"])
+        c1, c2 = st.columns([1, 1])
+        if c1.button("Play", key="play_{:d}".format(i)):
+            st.session_state["current_idx"]  = i
+            st.session_state["current_list"] = [rr["path"] for rr in filtered]
+            st.session_state["now"]          = r
 
-st.markdown("</div>", unsafe_allow_html=True)
+        if c2.button("Add to Queue", key="queue_{:d}".format(i)):
+            st.session_state.setdefault("queue", []).append(r["path"])
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
 
 st.session_state.setdefault("current_idx", 0)
 st.session_state.setdefault("current_list", [rr["path"] for rr in filtered] if filtered else [])
