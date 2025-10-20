@@ -126,7 +126,11 @@ cols = st.columns(3)
 for i, r in enumerate(filtered):
     with cols[i % 3]:
         st.markdown("<div class='glass'>", unsafe_allow_html=True)
-        st.markdown(f"**{r['title']}**  
+        st.markdown(
+             f"**{r['title']}**  \n"
+             f"<span class='small'>{r['artist']} • {r['album']} • {fmt_time(r['duration'])}</span>",
+            unsafe_allow_html=True
+        )
 <span class='small'>{r['artist']} • {r['album']} • {fmt_time(r['duration'])}</span>", unsafe_allow_html=True)
         c1, c2 = st.columns([1,1])
         if c1.button("▶ Play", key=f"play_{i}"):
