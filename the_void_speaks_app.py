@@ -1,25 +1,135 @@
-# THE VOID SPEAKS — Streamlit App (6dainn mystical, offline/local)
-import os, json, random
+# app.py
+# THE VOID SPEAKS — 6dainn-themed local music player (offline-first, explicit demo track)
+import os, json, random, sqlite3
 from pathlib import Path
 import pandas as pd
-from mutagen import File as MF
 import streamlit as st
 
-ROOT = Path.cwd()
-ASSETS = ROOT / "assets"; ASSETS.mkdir(exist_ok=True)
-DB = ROOT / "library.json"
+# ---------- REQUIRED: your demo track ----------
+DEMO_SONG_NAME = "@FORCEPARKBOISWORLDWIDE - LOTUS.mp3"  # <-- change extension if your file isn't .mp3
 
-# Use local logo file if present
-LOGO_PATH = ROOT / "THE VOID SPEAKS.png"
+# ---------- Paths ----------
+BASE     = Path(__file__).resolve().parent
+ASSETS   = BASE / "assets"
+ASSETS.mkdir(exist_ok=True)
+DB_PATH  = BASE / "music.db"       # optional — if present, will be used instead of file scan
+IDX_JSON = BASE / "library.json"
+LOGO_PNG = BASE / "THE VOID SPEAKS.png"
+
+AUDIO_EXTS = {".mp3",".m4a",".aac",".wav",".ogg",".flac"}
+
+# ---------- Optional tag reader (no crash if missing) ----------
+def _try_read_tags(p: Path):
+    title = p.stem; artist = "Unknown"; album = "Unknown"; duration = 0.0
+    try:
+        from mutagen import File as MF
+        mfe = MF(p, easy=True)
+        if mfe:
+            title  = (mfe.get("title",  [title])      or [title])[0]
+            artist = (mfe.get("artist", ["Unknown"])  or ["Unknown"])[0]
+            album  = (mfe.get("album",  ["Unknown"])  or ["Unknown"])[0]
+        mf = MF(p)
+        if mf and getattr(mf, "info", None):
+            duration = float(getattr(mf.info, "length", 0) or 0)
+    except Exception:
+        pass
+    return {"title": str(title), "artist": str(artist), "album": str(album), "duration": float(duration), "path": str(p)}
+
+# ---------- Loaders ----------
+def scan_assets():
+    rows = []
+    # 1) Add DEMO track (explicit)
+    demo_path = ASSETS / DEMO_SONG_NAME
+    if demo_path.exists():
+        rows.append(_try_read_tags(demo_path))
+
+    # 2) Add everything else under assets/
+    for p in ASSETS.rglob("*"):
+        if p.suffix.lower() in AUDIO_EXTS:
+            # avoid duplicate if it's the demo track already added
+            if str(p) == str(demo_path):
+                continue
+            rows.append(_try_read_tags(p))
+    return rows
+
+def save_index(rows):
+    try:
+        IDX_JSON.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+def load_index():
+    if IDX_JSON.exists():
+        try:
+            data = json.loads(IDX_JSON.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    rows = scan_assets()
+    save_index(rows)
+    return rows
+
+def load_from_db(q: str = ""):
+    con = sqlite3.connect(DB_PATH)
+    if q.strip():
+        df = pd.read_sql_query(
+            """
+            SELECT
+              COALESCE(title,'')   AS title,
+              COALESCE(artist,'')  AS artist,
+              COALESCE(album,'')   AS album,
+              COALESCE(duration,0) AS duration,
+              COALESCE(local_path,'') AS path
+            FROM tracks
+            WHERE title LIKE ? OR artist LIKE ? OR album LIKE ?
+            LIMIT 1000
+            """,
+            con, params=[f"%{q}%", f"%{q}%", f"%{q}%"]
+        )
+    else:
+        df = pd.read_sql_query(
+            """
+            SELECT
+              COALESCE(title,'')   AS title,
+              COALESCE(artist,'')  AS artist,
+              COALESCE(album,'')   AS album,
+              COALESCE(duration,0) AS duration,
+              COALESCE(local_path,'') AS path
+            FROM tracks
+            ORDER BY RANDOM()
+            LIMIT 1000
+            """,
+            con
+        )
+    con.close()
+    return df.to_dict("records")
+
+def filter_rows(rows, q):
+    q = (q or "").strip().lower()
+    if not q: return rows
+    out = []
+    for r in rows:
+        blob = f"{r.get('title','')} {r.get('artist','')} {r.get('album','')}".lower()
+        if q in blob: out.append(r)
+    return out
+
+def fmt_time(sec):
+    try:
+        sec = int(float(sec))
+        return f"{sec//60:02d}:{sec%60:02d}"
+    except Exception:
+        return "00:00"
+
+# ---------- Theme ----------
+PALETTE = ["#0a0a0d","#15131b","#231b2b","#3e1a4a","#5c2d91","#8b4aff","#b68cff","#d8bfff"]
 LOGO_TAG = ""
-if LOGO_PATH.exists():
+if LOGO_PNG.exists():
     import base64
-    b64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("utf-8")
+    b64 = base64.b64encode(LOGO_PNG.read_bytes()).decode("utf-8")
     LOGO_TAG = f"<img class='logo' src='data:image/png;base64,{b64}'/>"
 
-PALETTE = ["#0a0a0d","#15131b","#231b2b","#3e1a4a","#5c2d91","#8b4aff","#b68cff","#d8bfff"]
-
-FOG_CSS = f"""
+CSS = f"""
 <style>
 :root {{
   --p0: {PALETTE[0]}; --p1: {PALETTE[1]}; --p2: {PALETTE[2]}; --p3: {PALETTE[3]};
@@ -33,9 +143,16 @@ html, body, .stApp {{
   color: var(--txt);
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 }}
-@keyframes fogflow {{ 0%{{background-position:0% 50%}} 100%{{background-position:100% 50%}} }}
-.logo-wrap {{ text-align:center; margin-top: .5rem; }}
-.logo {{ width: 360px; max-width: 72vw; filter: drop-shadow(0 0 14px rgba(139,74,255,.5)); animation: breathe 5.5s ease-in-out infinite; }}
+@keyframes fogflow {{
+  0% {{ background-position: 0% 50% }}
+  100% {{ background-position: 100% 50% }}
+}}
+.logo-wrap {{ text-align:center; margin-top: .25rem; }}
+.logo {{
+  width: 360px; max-width: 72vw;
+  filter: drop-shadow(0 0 14px rgba(139,74,255,.5));
+  animation: breathe 5.5s ease-in-out infinite;
+}}
 @keyframes breathe {{
   0%,100% {{ filter: drop-shadow(0 0 12px rgba(139,74,255,.35)) brightness(1.05); }}
   50%     {{ filter: drop-shadow(0 0 28px rgba(182,140,255,.55)) brightness(1.12); }}
@@ -59,111 +176,74 @@ html, body, .stApp {{
 }}
 .small {{ color: var(--muted); font-size: 12px; }}
 .title {{ font-weight:600; letter-spacing:.3px; }}
+.card-title {{ font-weight:600; }}
+.stButton>button {{ width: 100%; }}
 </style>
 """
 
-EXTS = {".mp3",".wav",".flac",".aac",".m4a",".ogg"}
-
-def scan_assets():
-    rows = []
-    for p in ASSETS.rglob("*"):
-        if p.suffix.lower() in EXTS:
-            try:
-                mf = MF(p, easy=True)
-                title  = (mf.get("title",  [p.stem]) or [p.stem])[0]
-                artist = (mf.get("artist", ["Unknown"]) or ["Unknown"])[0]
-                album  = (mf.get("album",  ["Unknown"]) or ["Unknown"])[0]
-                dur    = float(getattr(mf.info, "length", 0.0))
-            except Exception:
-                title, artist, album, dur = p.stem, "Unknown", "Unknown", 0.0
-            rows.append({"title":title,"artist":artist,"album":album,"duration":dur,"path":str(p)})
-    return rows
-
-def load_db():
-    if DB.exists():
-        try: return json.loads(DB.read_text(encoding="utf-8"))
-        except: pass
-    rows = scan_assets(); DB.write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding="utf-8")
-    return rows
-
-def save_db(rows): DB.write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding="utf-8")
-
-def filter_rows(rows, q):
-    q=(q or "").strip().lower()
-    if not q: return rows
-    out=[]
-    for r in rows:
-        blob=f"{r['title']} {r['artist']} {r['album']}".lower()
-        if q in blob: out.append(r)
-    return out
-
-def fmt_time(sec):
-    try: sec=int(sec); return f"{sec//60:02d}:{sec%60:02d}"
-    except: return "00:00"
-
+# ---------- Page ----------
 st.set_page_config(page_title="THE VOID SPEAKS", page_icon="💜", layout="wide", initial_sidebar_state="expanded")
-st.markdown(FOG_CSS, unsafe_allow_html=True)
-
+st.markdown(CSS, unsafe_allow_html=True)
 st.markdown("<div class='logo-wrap'>"+LOGO_TAG+"</div>", unsafe_allow_html=True)
 
+# ---------- Sidebar ----------
 with st.sidebar:
     st.markdown("### Library")
-    if st.button("🔄 Rescan"):
-        rows = scan_assets(); save_db(rows); st.session_state['rows']=rows; st.success("Library updated.", icon="✨")
+    st.caption("Place audio files in: `./assets/`")
+    use_db = DB_PATH.exists()
+    st.write(f"Source: {'music.db' if use_db else 'assets/ scan'}")
+    if not use_db:
+        if st.button("🔄 Rescan"):
+            st.session_state["rows"] = scan_assets()
+            save_index(st.session_state["rows"])
+            st.success("Library updated.")
     st.markdown("---")
-    st.markdown("### Queue")
-    st.session_state.setdefault("queue", [])
-    if st.button("🧹 Clear Queue"):
-        st.session_state["queue"].clear()
-    st.checkbox("Shuffle", key="shuffle")
-    st.selectbox("Loop", ["none","one","all"], key="loop")
+    st.markdown("### Player")
+    st.checkbox("Shuffle", key="shuffle", value=st.session_state.get("shuffle", False))
+    st.selectbox("Loop", ["none","one","all"], key="loop", index=["none","one","all"].index(st.session_state.get("loop","none")))
+    st.markdown("---")
+    st.markdown("### Debug")
+    st.write("Assets dir:", str(ASSETS))
+    st.write("Demo track expected at:", str(ASSETS / DEMO_SONG_NAME))
+    st.write("Demo exists:", (ASSETS / DEMO_SONG_NAME).exists())
 
-rows = st.session_state.setdefault("rows", load_db())
-query = st.text_input("", placeholder="Search title / artist / album")
-filtered = filter_rows(rows, query)
+# ---------- Load ----------
+query = st.text_input("Search title / artist / album", "", placeholder="@FORCEPARKBOISWORLDWIDE - LOTUS")
 
-cols = st.columns(3)
-for i, r in enumerate(filtered):
-    with cols[i % 3]:
-        st.markdown("<div class='glass'>", unsafe_allow_html=True)
-        st.markdown(
-             f"**{r['title']}**  \n"
-             f"<span class='small'>{r['artist']} • {r['album']} • {fmt_time(r['duration'])}</span>",
-            unsafe_allow_html=True
-        )
-cols = st.columns(3)
-for i, r in enumerate(filtered):
-    title  = r.get("title", "")
-    artist = r.get("artist", "Unknown")
-    album  = r.get("album", "Unknown")
-    dur    = fmt_time(r.get("duration", 0))
+if DB_PATH.exists():
+    rows = load_from_db(query)
+else:
+    rows = st.session_state.setdefault("rows", load_index())
+    rows = filter_rows(rows, query)
 
-    with cols[i % 3]:
-        st.markdown("<div class='glass'>", unsafe_allow_html=True)
+# ---------- Cards ----------
+if not rows:
+    st.warning("No tracks found. Put your file here:\n\n`assets/" + DEMO_SONG_NAME + "`")
+else:
+    cols = st.columns(3)
+    for i, r in enumerate(rows):
+        with cols[i % 3]:
+            st.markdown("<div class='glass'>", unsafe_allow_html=True)
+            title  = r.get("title","")
+            artist = r.get("artist","")
+            album  = r.get("album","")
+            dur    = fmt_time(r.get("duration",0))
+            st.markdown(f"<div class='card-title'>{title}</div><div class='small'>{artist} • {album} • {dur}</div>", unsafe_allow_html=True)
+            c1, c2 = st.columns([1,1])
+            if c1.button("▶ Play", key=f"play_{i}"):
+                st.session_state["current_idx"]  = i
+                st.session_state["current_list"] = [x.get("path","") for x in rows]
+                st.session_state["now"] = r
+            if c2.button("➕ Queue", key=f"queue_{i}"):
+                st.session_state.setdefault("queue", [])
+                st.session_state["queue"].append(r.get("path",""))
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        # No f-strings with dict indexing → use .format() to avoid parser issues
-        card_html = (
-            "**{title}**  \n"
-            "<span class='small'>{artist} &bull; {album} &bull; {dur}</span>"
-        ).format(title=title, artist=artist, album=album, dur=dur)
-        st.markdown(card_html, unsafe_allow_html=True)
-
-        c1, c2 = st.columns([1, 1])
-        if c1.button("Play", key="play_{:d}".format(i)):
-            st.session_state["current_idx"]  = i
-            st.session_state["current_list"] = [rr["path"] for rr in filtered]
-            st.session_state["now"]          = r
-
-        if c2.button("Add to Queue", key="queue_{:d}".format(i)):
-            st.session_state.setdefault("queue", []).append(r["path"])
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-
+# ---------- Player ----------
 st.session_state.setdefault("current_idx", 0)
-st.session_state.setdefault("current_list", [rr["path"] for rr in filtered] if filtered else [])
-if "now" not in st.session_state and filtered:
-    st.session_state["now"] = filtered[0]
+st.session_state.setdefault("current_list", [x.get("path","") for x in rows] if rows else [])
+if "now" not in st.session_state and rows:
+    st.session_state["now"] = rows[0]
 
 st.markdown("<div class='player'>", unsafe_allow_html=True)
 left, mid, right = st.columns([3,4,3])
@@ -171,34 +251,45 @@ left, mid, right = st.columns([3,4,3])
 with left:
     now = st.session_state.get("now")
     if now:
-        st.markdown(f"<div class='title'>{now['title']}</div><div class='small'>{now['artist']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='title'>{now.get('title','')}</div><div class='small'>{now.get('artist','')}</div>", unsafe_allow_html=True)
     else:
         st.markdown("<div class='small'>Nothing playing</div>", unsafe_allow_html=True)
 
 with mid:
-    c1, c2, c3, c4 = st.columns([1,1,1,8])
-    if c1.button("⏮", key="prev"):
+    c1, c2, c3, _ = st.columns([1,1,1,8])
+    if c1.button("⏮ Prev", key="prev"):
         if st.session_state.get("shuffle"):
             st.session_state["current_idx"] = random.randint(0, max(0, len(st.session_state["current_list"])-1))
         else:
-            st.session_state["current_idx"] = max(0, st.session_state["current_idx"]-1)
+            st.session_state["current_idx"] = max(0, st.session_state["current_idx"] - 1)
         try:
             path = st.session_state["current_list"][st.session_state["current_idx"]]
             for r in rows:
-                if r["path"] == path: st.session_state["now"] = r; break
-        except: pass
-    if c2.button("⏯", key="playpause"):
+                if r.get("path","") == path: st.session_state["now"] = r; break
+        except Exception:
+            pass
+    if c2.button("⏯ Play/Pause", key="playpause"):
         pass
-    if c3.button("⏭", key="next"):
+    if c3.button("⏭ Next", key="next"):
         if st.session_state.get("shuffle"):
             st.session_state["current_idx"] = random.randint(0, max(0, len(st.session_state["current_list"])-1))
         else:
-            st.session_state["current_idx"] = min(len(st.session_state["current_list"])-1, st.session_state["current_idx"]+1)
+            st.session_state["current_idx"] = min(len(st.session_state["current_list"])-1, st.session_state["current_idx"] + 1)
         try:
             path = st.session_state["current_list"][st.session_state["current_idx"]]
             for r in rows:
-                if r["path"] == path: st.session_state["now"] = r; break
-        except: pass
+                if r.get("path","") == path: st.session_state["now"] = r; break
+        except Exception:
+            pass
 
 with right:
-    if now: st.audio(now["path"])
+    now = st.session_state.get("now")
+    path = (now or {}).get("path","")
+    if path and os.path.exists(path):
+        st.audio(path)
+    else:
+        if path:
+            st.markdown("<div class='small'>File not found on disk.</div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div class='small'>No file selected.</div>", unsafe_allow_html=True)
+
