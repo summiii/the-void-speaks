@@ -1,57 +1,39 @@
 # app.py
-# THE VOID SPEAKS — 6dainn-themed local music player (offline-first)
-# - Scans ./assets for audio files (mp3/m4a/ogg/wav/flac/aac)
-# - Optional: if music.db exists, loads from SQLite (tracks table) instead
-# - Search, shuffle, next/prev, sticky player, neon purple + dark gray UI
+# THE VOID SPEAKS — 6dainn-themed local music player (auto-loads any .mp3 in /assets)
 
-import os
-import json
-import random
-import sqlite3
+import os, json, random, sqlite3
 from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
 # ---------- Paths ----------
-BASE    = Path(__file__).resolve().parent
-ASSETS  = BASE / "assets"               # put your audio files here
+BASE     = Path(__file__).resolve().parent
+ASSETS   = BASE / "assets"
 ASSETS.mkdir(exist_ok=True)
-DB_PATH = BASE / "music.db"            # optional sqlite db
-IDX_JSON = BASE / "library.json"       # lightweight local index (when not using DB)
+DB_PATH  = BASE / "music.db"       # optional, not required
+IDX_JSON = BASE / "library.json"
 LOGO_PNG = BASE / "THE VOID SPEAKS.png"
 
-# ---------- Optional tag reader (mutagen) ----------
+AUDIO_EXTS = {".mp3"}  # only mp3s now
+
+# ---------- Metadata reader ----------
 def _try_read_tags(p: Path):
-    """Try to read tags/duration with mutagen. If not available or fails, return minimal."""
-    title = p.stem
-    artist = "Unknown"
-    album = "Unknown"
-    duration = 0.0
+    title = p.stem; artist = "Unknown"; album = "Unknown"; duration = 0.0
     try:
-        from mutagen import File as MF  # optional dependency
+        from mutagen import File as MF
         mfe = MF(p, easy=True)
         if mfe:
-            title  = (mfe.get("title",  [title])    or [title])[0]
-            artist = (mfe.get("artist", ["Unknown"]) or ["Unknown"])[0]
-            album  = (mfe.get("album",  ["Unknown"]) or ["Unknown"])[0]
+            title  = (mfe.get("title",  [title])      or [title])[0]
+            artist = (mfe.get("artist", ["Unknown"])  or ["Unknown"])[0]
+            album  = (mfe.get("album",  ["Unknown"])  or ["Unknown"])[0]
         mf = MF(p)
         if mf and getattr(mf, "info", None):
-            length = getattr(mf.info, "length", 0) or 0
-            duration = float(length)
+            duration = float(getattr(mf.info, "length", 0) or 0)
     except Exception:
         pass
-    return {
-        "title": str(title),
-        "artist": str(artist),
-        "album": str(album),
-        "duration": float(duration),
-        "path": str(p)
-    }
+    return {"title": str(title), "artist": str(artist), "album": str(album), "duration": float(duration), "path": str(p)}
 
-# ---------- Library loaders ----------
-AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac"}
-
+# ---------- Scan assets ----------
 def scan_assets():
     rows = []
     for p in ASSETS.rglob("*"):
@@ -77,53 +59,13 @@ def load_index():
     save_index(rows)
     return rows
 
-def load_from_db(q: str = ""):
-    con = sqlite3.connect(DB_PATH)
-    if q.strip():
-        df = pd.read_sql_query(
-            """
-            SELECT
-              COALESCE(title,'')   AS title,
-              COALESCE(artist,'')  AS artist,
-              COALESCE(album,'')   AS album,
-              COALESCE(duration,0) AS duration,
-              COALESCE(local_path,'') AS path
-            FROM tracks
-            WHERE
-              title  LIKE ? OR
-              artist LIKE ? OR
-              album  LIKE ?
-            LIMIT 1000
-            """,
-            con, params=[f"%{q}%", f"%{q}%", f"%{q}%"]
-        )
-    else:
-        df = pd.read_sql_query(
-            """
-            SELECT
-              COALESCE(title,'')   AS title,
-              COALESCE(artist,'')  AS artist,
-              COALESCE(album,'')   AS album,
-              COALESCE(duration,0) AS duration,
-              COALESCE(local_path,'') AS path
-            FROM tracks
-            ORDER BY RANDOM()
-            LIMIT 1000
-            """,
-            con
-        )
-    con.close()
-    return df.to_dict("records")
-
 def filter_rows(rows, q):
     q = (q or "").strip().lower()
-    if not q:
-        return rows
+    if not q: return rows
     out = []
     for r in rows:
         blob = f"{r.get('title','')} {r.get('artist','')} {r.get('album','')}".lower()
-        if q in blob:
-            out.append(r)
+        if q in blob: out.append(r)
     return out
 
 def fmt_time(sec):
@@ -133,7 +75,7 @@ def fmt_time(sec):
     except Exception:
         return "00:00"
 
-# ---------- Visual theme (6dainn) ----------
+# ---------- Theme ----------
 PALETTE = ["#0a0a0d","#15131b","#231b2b","#3e1a4a","#5c2d91","#8b4aff","#b68cff","#d8bfff"]
 LOGO_TAG = ""
 if LOGO_PNG.exists():
@@ -194,22 +136,18 @@ html, body, .stApp {{
 """
 
 # ---------- Page ----------
-st.set_page_config(page_title="THE VOID SPEAKS", page_icon="💜", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="THE VOID SPEAKS", page_icon="💜", layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
 st.markdown("<div class='logo-wrap'>"+LOGO_TAG+"</div>", unsafe_allow_html=True)
 
-# ---------- Sidebar controls ----------
+# ---------- Sidebar ----------
 with st.sidebar:
     st.markdown("### Library")
-    st.caption("Place audio files in: ./assets/")
-    # choose source mode
-    use_db = DB_PATH.exists()
-    st.write(f"Source: {'music.db' if use_db else 'assets/ scan'}")
-    if not use_db:
-        if st.button("Rescan"):
-            st.session_state["rows"] = scan_assets()
-            save_index(st.session_state["rows"])
-            st.success("Library updated.")
+    st.caption("Drop any .mp3 files in ./assets/")
+    if st.button("🔄 Rescan"):
+        st.session_state["rows"] = scan_assets()
+        save_index(st.session_state["rows"])
+        st.success("Library updated.")
     st.markdown("---")
     st.markdown("### Player")
     st.checkbox("Shuffle", key="shuffle", value=st.session_state.get("shuffle", False))
@@ -217,46 +155,38 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Debug")
     st.write("Assets dir:", str(ASSETS))
+    st.write("Files found:", len(list(ASSETS.glob('*.mp3'))))
 
-# ---------- Load library ----------
-query = st.text_input("Search title / artist / album", "", placeholder="@FORCEPARKBOISWORLDWIDE - LOTUS")
+# ---------- Load ----------
+query = st.text_input("Search title / artist / album", "", placeholder="Search your MP3s here")
+rows = st.session_state.setdefault("rows", load_index())
+rows = filter_rows(rows, query)
 
-if DB_PATH.exists():
-    rows = load_from_db(query)
-else:
-    rows = st.session_state.setdefault("rows", load_index())
-    rows = filter_rows(rows, query)
-
-# ---------- Cards grid ----------
+# ---------- Cards ----------
 if not rows:
-    st.warning("No tracks found.")
+    st.warning("🎵 No MP3 tracks found. Drop your files in `assets/` folder.")
 else:
     cols = st.columns(3)
     for i, r in enumerate(rows):
         with cols[i % 3]:
             st.markdown("<div class='glass'>", unsafe_allow_html=True)
-            title  = r.get("title","")
-            artist = r.get("artist","")
-            album  = r.get("album","")
-            dur    = fmt_time(r.get("duration",0))
-            st.markdown(f"<div class='card-title'>{title}</div><div class='small'>{artist} - {album} - {dur}</div>", unsafe_allow_html=True)
+            st.markdown(f"**{r['title']}**  \n<span class='small'>{r['artist']} • {r['album']} • {fmt_time(r['duration'])}</span>", unsafe_allow_html=True)
             c1, c2 = st.columns([1,1])
-            if c1.button("Play", key=f"play_{i}"):
-                st.session_state["current_idx"]  = i
-                st.session_state["current_list"] = [x.get("path","") for x in rows]
+            if c1.button("▶ Play", key=f"play_{i}"):
+                st.session_state["current_idx"] = i
+                st.session_state["current_list"] = [x["path"] for x in rows]
                 st.session_state["now"] = r
-            if c2.button("Queue", key=f"queue_{i}"):
+            if c2.button("➕ Queue", key=f"queue_{i}"):
                 st.session_state.setdefault("queue", [])
-                st.session_state["queue"].append(r.get("path",""))
+                st.session_state["queue"].append(r["path"])
             st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------- Player state ----------
+# ---------- Player ----------
 st.session_state.setdefault("current_idx", 0)
-st.session_state.setdefault("current_list", [x.get("path","") for x in rows] if rows else [])
+st.session_state.setdefault("current_list", [x["path"] for x in rows] if rows else [])
 if "now" not in st.session_state and rows:
     st.session_state["now"] = rows[0]
 
-# ---------- Player UI ----------
 st.markdown("<div class='player'>", unsafe_allow_html=True)
 left, mid, right = st.columns([3,4,3])
 
@@ -269,7 +199,7 @@ with left:
 
 with mid:
     c1, c2, c3, _ = st.columns([1,1,1,8])
-    if c1.button("Prev", key="prev"):
+    if c1.button("⏮ Prev", key="prev"):
         if st.session_state.get("shuffle"):
             st.session_state["current_idx"] = random.randint(0, max(0, len(st.session_state["current_list"])-1))
         else:
@@ -277,14 +207,12 @@ with mid:
         try:
             path = st.session_state["current_list"][st.session_state["current_idx"]]
             for r in rows:
-                if r.get("path","") == path:
-                    st.session_state["now"] = r
-                    break
+                if r.get("path","") == path: st.session_state["now"] = r; break
         except Exception:
             pass
-    if c2.button("Play/Pause", key="playpause"):
-        pass  # Streamlit audio widget is user-controlled; we keep state-only.
-    if c3.button("Next", key="next"):
+    if c2.button("⏯ Play/Pause", key="playpause"):
+        pass
+    if c3.button("⏭ Next", key="next"):
         if st.session_state.get("shuffle"):
             st.session_state["current_idx"] = random.randint(0, max(0, len(st.session_state["current_list"])-1))
         else:
@@ -292,9 +220,7 @@ with mid:
         try:
             path = st.session_state["current_list"][st.session_state["current_idx"]]
             for r in rows:
-                if r.get("path","") == path:
-                    st.session_state["now"] = r
-                    break
+                if r.get("path","") == path: st.session_state["now"] = r; break
         except Exception:
             pass
 
@@ -304,7 +230,4 @@ with right:
     if path and os.path.exists(path):
         st.audio(path)
     else:
-        if path:
-            st.markdown("<div class='small'>File not found on disk.</div>", unsafe_allow_html=True)
-        else:
-            st.markdown("<div class='small'>No file selected.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small'>No file selected.</div>", unsafe_allow_html=True)
